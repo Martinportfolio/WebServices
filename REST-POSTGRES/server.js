@@ -12,8 +12,8 @@ const port = 8000; // Port sur lequel le serveur écoutera les requêtes
 const sql = postgres({
   host: "localhost", // Adresse du serveur PostgreSQL
   port: 5432, // Port PostgreSQL
-  database: "mydb", // Nom de la base de données
-  username: "user", // Nom d'utilisateur PostgreSQL
+  db: "mydb", // Nom de la base de données
+  user: "user", // Nom d'utilisateur PostgreSQL
   password: "password", // Mot de passe PostgreSQL
   ssl: false, // SSL désactivé
 });
@@ -38,6 +38,12 @@ const UserSchema = z.object({
 // Schéma pour créer un produit (sans l'id)
 const CreateProductSchema = ProductSchema.omit({ id: true });
 const CreateUserSchema = UserSchema.omit({ id: true });
+
+// Schéma (PUT)
+const UpdateUserSchema = UserSchema.omit({ id: true });
+
+// Schéma (PATCH)
+const PatchUserSchema = UpdateUserSchema.partial();
 
 app.post("/users", async (req, res) => {
   // Validation des données reçues via Zod
@@ -124,6 +130,83 @@ app.get("/users/:id", async (req, res) => {
     res
       .status(500)
       .json({ error: "Erreur lors de la récupération du produit." });
+  }
+});
+
+// PUT - Mise à jour complète d'un utilisateur
+app.put("/users/:id", async (req, res) => {
+  try {
+    // Validation des données
+    const result = await UpdateUserSchema.safeParse(req.body);
+    
+    if (!result.success) {
+      return res.status(400).json({ error: "Données invalides", details: result.error });
+    }
+
+    const { name, password, email } = result.data;
+    const hashedPassword = crypto.createHash('sha512').update(password).digest('hex');
+
+    const [updatedUser] = await sql`
+      UPDATE users 
+      SET name = ${name},
+          password = ${hashedPassword},
+          email = ${email}
+      WHERE id = ${req.params.id}
+      RETURNING id, name, email
+    `;
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: "Utilisateur non trouvé" });
+    }
+
+    res.json(updatedUser);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur lors de la mise à jour" });
+  }
+});
+
+// PATCH - Mise à jour partielle d'un utilisateur
+app.patch("/users/:id", async (req, res) => {
+  try {
+    // Validation des données partielles
+    const result = await PatchUserSchema.safeParse(req.body);
+    
+    if (!result.success) {
+      return res.status(400).json({ error: "Données invalides", details: result.error });
+    }
+
+    // Récupération de l'utilisateur existant
+    const [existingUser] = await sql`
+      SELECT * FROM users WHERE id = ${req.params.id}
+    `;
+
+    if (!existingUser) {
+      return res.status(404).json({ error: "Utilisateur non trouvé" });
+    }
+
+    // Préparation des données à mettre à jour
+    const updates = { ...result.data };
+    if (updates.password) {
+      updates.password = crypto.createHash('sha512').update(updates.password).digest('hex');
+    }
+
+    // Construction dynamique de la requête SQL
+    const setClause = Object.entries(updates)
+      .map(([key, value]) => `${key} = '${value}'`)
+      .join(', ');
+
+    const [updatedUser] = await sql.unsafe(`
+      UPDATE users 
+      SET ${setClause}
+      WHERE id = ${req.params.id}
+      RETURNING id, name, email
+    `);
+
+    res.json(updatedUser);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erreur lors de la mise à jour partielle" });
   }
 });
 
